@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Plus } from "lucide-react";
 import type { MapDifficulty } from "@/lib/game-engine";
 import { boundsOf, selectHydro, settleDateline, type FeatureCollection, type HydroFeature, type LandFeature } from "@/lib/region-land";
 import type { LngLatBounds } from "@/lib/region-frames";
@@ -69,6 +70,8 @@ interface GeoMap {
   setMaxBounds(bounds: LngLatBounds | null): void;
   setMinZoom(zoom: number): void;
   setMaxZoom(zoom: number): void;
+  getMinZoom(): number;
+  getMaxZoom(): number;
   getZoom(): number;
   getCenter(): { lng: number; lat: number };
   fitBounds(
@@ -97,7 +100,13 @@ interface GeoMap {
   boxZoom: { disable(): void };
   dragPan: { enable(): void; disable(): void };
   dragRotate: { disable(): void };
-  touchZoomRotate: { disable(): void; disableRotation(): void };
+  touchZoomRotate: {
+    enable(): void;
+    disable(): void;
+    disableRotation(): void;
+    setZoomRate(zoomRate?: number): void;
+    _tapDragZoom?: { disable(): void };
+  };
   touchPitch?: { disable(): void };
   keyboard?: { disable(): void; disableRotation?: () => void };
   scrollZoom: { enable(): void; disable(): void };
@@ -332,7 +341,15 @@ function tuneWater(map: GeoMap, region: string) {
   }
 }
 
-/** Scroll, pinch, double-click, keyboard, and box zoom stay off. The frame does not move again. */
+/**
+ * One tap moves the map this many levels.
+ * Pinch uses the same factor, so a small finger spread is a jump rather than a nudge.
+ */
+export const ZOOM_JUMP = 4;
+/** Near enough to set a pin on a city, including from the world map on a phone. */
+const CITY_ZOOM = 14;
+
+/** Scroll, double-click, keyboard, and box zoom stay off. Pinch is separate. */
 function freezeZoom(map: GeoMap) {
   map.scrollZoom.disable();
   map.boxZoom.disable();
@@ -343,9 +360,27 @@ function freezeZoom(map: GeoMap) {
   map.keyboard?.disable();
 }
 
-function holdZoom(map: GeoMap, zoom: number) {
-  map.setMinZoom(zoom);
-  map.setMaxZoom(zoom);
+/** Pinch stays on. A second tap must still drop a pin, so tap-drag zoom stays off. */
+function armPinch(map: GeoMap) {
+  map.scrollZoom.disable();
+  map.boxZoom.disable();
+  map.doubleClickZoom.disable();
+  map.dragRotate.disable();
+  map.touchPitch?.disable();
+  map.keyboard?.disable();
+  map.touchZoomRotate.enable();
+  map.touchZoomRotate.disableRotation();
+  map.touchZoomRotate.setZoomRate(ZOOM_JUMP);
+  map.touchZoomRotate._tapDragZoom?.disable();
+  map.dragPan.enable();
+}
+
+function frameZoom(map: GeoMap, zoom: number, fastZoom: boolean) {
+  const min = Math.min(zoom, CITY_ZOOM);
+  map.setMinZoom(min);
+  map.setMaxZoom(fastZoom ? Math.max(zoom, CITY_ZOOM) : zoom);
+  if (fastZoom) armPinch(map);
+  else freezeZoom(map);
 }
 
 function showGraticule(map: GeoMap, region: string) {
@@ -412,7 +447,14 @@ function frameCamera(bounds: LngLatBounds, width: number, height: number) {
   };
 }
 
-function fitLand(map: GeoMap, region: string, width: number, height: number, land: FeatureCollection<LandFeature>) {
+function fitLand(
+  map: GeoMap,
+  region: string,
+  width: number,
+  height: number,
+  land: FeatureCollection<LandFeature>,
+  fastZoom: boolean,
+) {
   freezeZoom(map);
   map.setMinZoom(0);
   map.setMaxZoom(22);
@@ -426,8 +468,8 @@ function fitLand(map: GeoMap, region: string, width: number, height: number, lan
       pitch: 0,
       duration: 0,
     });
-    holdZoom(map, zoom);
     map.setMaxBounds(WORLD_BOUNDS);
+    frameZoom(map, map.getZoom(), fastZoom);
     map.dragPan.enable();
     showGraticule(map, region);
     return;
@@ -443,8 +485,8 @@ function fitLand(map: GeoMap, region: string, width: number, height: number, lan
     bearing: 0,
     pitch: 0,
   });
-  holdZoom(map, map.getZoom());
-  map.dragPan.disable();
+  frameZoom(map, map.getZoom(), fastZoom);
+  if (!fastZoom) map.dragPan.disable();
   showGraticule(map, region);
 }
 
@@ -468,6 +510,7 @@ function applyRegionFrame(
   rivers: FeatureCollection<HydroFeature>,
   lakes: FeatureCollection<HydroFeature>,
   refit: boolean,
+  fastZoom: boolean,
 ) {
   rememberLand(land.features);
   map.getSource("countries")?.setData(land);
@@ -485,7 +528,8 @@ function applyRegionFrame(
     map.getSource("rivers")?.setData(country ? hydro.rivers : emptyFeatures);
   }
   tuneWater(map, region);
-  if (refit) fitLand(map, region, width, height, land);
+  if (refit) fitLand(map, region, width, height, land, fastZoom);
+  else if (fastZoom) armPinch(map);
   else freezeZoom(map);
 }
 
@@ -557,6 +601,7 @@ export function MapStage({
   arcs,
   highlight,
   onPlace,
+  zoomLabel = "Zoom in",
 }: {
   difficulty: MapDifficulty;
   region: string;
@@ -565,6 +610,7 @@ export function MapStage({
   arcs: MapArc[];
   highlight: GeoJSON.Feature | null;
   onPlace: (coordinates: [number, number]) => void;
+  zoomLabel?: string;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -580,10 +626,20 @@ export function MapStage({
   const [lands, setLands] = useState<Record<string, FeatureCollection<LandFeature>>>({});
   const landLoads = useRef(new Set<string>());
   const frameKeyRef = useRef("");
+  const zoomTarget = useRef<number | null>(null);
+  const [fastZoom, setFastZoom] = useState(false);
 
   useEffect(() => {
     onPlaceRef.current = onPlace;
   }, [onPlace]);
+
+  useLayoutEffect(() => {
+    const media = window.matchMedia("(max-width: 1279px), (pointer: coarse)");
+    const apply = () => setFastZoom(media.matches);
+    apply();
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -627,6 +683,20 @@ export function MapStage({
 
       const live = map;
       mapRef.current = live;
+      const publishZoom = () => {
+        const shell = shellRef.current;
+        if (!shell) return;
+        shell.dataset.zoom = live.getZoom().toFixed(3);
+        shell.dataset.maxZoom = live.getMaxZoom().toFixed(3);
+      };
+      live.on("zoom", publishZoom);
+      live.on("moveend", () => {
+        zoomTarget.current = null;
+        publishZoom();
+      });
+      live.on("touchstart", () => {
+        zoomTarget.current = null;
+      });
       let loaded = false;
       live.setMinPitch(0);
       live.setMaxPitch(0);
@@ -868,11 +938,26 @@ export function MapStage({
       map.getSource("lakes")?.setData(emptyFeatures);
       return;
     }
-    const frameKey = `${region}:${Math.round(container.clientWidth / 16)}:${Math.round(container.clientHeight / 16)}`;
+    const frameKey = `${region}:${fastZoom ? "jump" : "lock"}:${Math.round(container.clientWidth / 16)}:${Math.round(container.clientHeight / 16)}`;
     const refit = frameKeyRef.current !== frameKey;
     frameKeyRef.current = frameKey;
-    applyRegionFrame(map, region, container.clientWidth, container.clientHeight, land, hydro.rivers, hydro.lakes, refit);
-  }, [hydro, lands, ready, region, shell.height, shell.width]);
+    applyRegionFrame(
+      map,
+      region,
+      container.clientWidth,
+      container.clientHeight,
+      land,
+      hydro.rivers,
+      hydro.lakes,
+      refit,
+      fastZoom,
+    );
+    const shell = shellRef.current;
+    if (shell) {
+      shell.dataset.zoom = map.getZoom().toFixed(3);
+      shell.dataset.maxZoom = map.getMaxZoom().toFixed(3);
+    }
+  }, [fastZoom, hydro, lands, ready, region, shell.height, shell.width]);
 
   return (
     <div
@@ -880,6 +965,8 @@ export function MapStage({
       data-region={region}
       data-highlight={highlight ? "yes" : "no"}
       data-arcs={arcs.some((arc) => arc.segments.some((segment) => segment.length >= 2)) ? "yes" : "no"}
+      data-fast-zoom={fastZoom ? "yes" : "no"}
+      data-zoom-jump={ZOOM_JUMP}
       className="absolute inset-0 bg-[#e2f6fe]"
     >
       <div
@@ -909,6 +996,25 @@ export function MapStage({
             </button>
           </div>
         </div>
+      ) : null}
+      {ready && fastZoom ? (
+        <button
+          type="button"
+          data-zoom-in=""
+          aria-label={zoomLabel}
+          onClick={() => {
+            const map = mapRef.current;
+            if (!map) return;
+            const base = zoomTarget.current ?? map.getZoom();
+            const next = Math.min(map.getMaxZoom(), base + ZOOM_JUMP);
+            if (next <= base + 0.01) return;
+            zoomTarget.current = next;
+            map.easeTo({ zoom: next, duration: 180 });
+          }}
+          className="absolute top-[calc(4.75rem+env(safe-area-inset-top))] right-3 z-10 grid h-11 w-11 place-items-center border border-[#2A150C] bg-[#FBF6D2] text-[#2A150C] shadow-[0_4px_12px_rgba(42,21,12,0.16)]"
+        >
+          <Plus className="h-5 w-5" aria-hidden="true" />
+        </button>
       ) : null}
     </div>
   );

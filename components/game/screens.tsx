@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
-import { ChevronDown, Copy, Globe, Trophy, Volume2, VolumeX } from "lucide-react";
+import { ChevronDown, Copy, Globe, Trophy, Volume2, VolumeX, X } from "lucide-react";
 import { placeCount, quizPlaceMode, getPlace, type PlaceMode } from "@/data/catalog";
 import { QUESTION_CATEGORY_LABEL, categoryForMap, questionCategoriesFor, type QuestionCategory } from "@/data/question-categories";
 import { quizCard, quizPool } from "@/data/quiz";
@@ -189,7 +189,8 @@ export function LobbyScreen({
         : text.levelNoteMedium;
 
   return (
-    <div className={`pointer-events-auto absolute top-0 bottom-0 left-0 z-20 flex h-dvh w-[min(480px,calc(100%-48px))] flex-col bg-[#E2ECC0] text-[#2A150C] ${uiFace}`}>
+    <div className={panelClass}>
+      <SheetHandle />
       <header className="flex h-12 shrink-0 items-center justify-end border-b-[0.5px] border-[#2A150C] px-4">
         <label className={ink}>
           <span className="sr-only">{text.language}</span>
@@ -306,10 +307,10 @@ export function LobbyScreen({
           onJoinCode={onJoinCode}
         />
       </div>
-      <footer className="flex shrink-0 items-center justify-end border-t-[0.5px] border-[#2A150C] px-4 py-2">
+      <footer className="flex shrink-0 items-center justify-end border-t-[0.5px] border-[#2A150C] px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <button
           type="button"
-          className="h-9 min-w-[104px] border border-[#2A150C] bg-[#FAD5B3] px-4 text-sm font-medium text-[#2A150C] disabled:opacity-40"
+          className="h-9 w-full border border-[#2A150C] bg-[#FAD5B3] px-4 text-sm font-medium text-[#2A150C] disabled:opacity-40 md:w-auto md:min-w-[104px]"
           disabled={!step1Done || !quizAvailable || playMode === "multi"}
           onClick={() => onPlay("quiz")}
         >
@@ -347,7 +348,28 @@ function FieldRow({
   );
 }
 
-const panelClass = `pointer-events-auto absolute top-0 bottom-0 left-0 z-20 flex h-dvh w-[min(480px,calc(100%-48px))] flex-col bg-[#E2ECC0] text-[#2A150C] ${uiFace}`;
+const panelClass = `pointer-events-auto absolute inset-x-0 bottom-0 z-20 flex h-[58dvh] max-h-[70dvh] flex-col rounded-t-2xl border-t border-[#2A150C] bg-[#E2ECC0] text-[#2A150C] shadow-[0_-10px_28px_rgba(42,21,12,0.12)] md:inset-y-0 md:right-auto md:left-0 md:h-dvh md:max-h-none md:w-[min(480px,calc(100%-48px))] md:rounded-none md:border-t-0 md:shadow-none ${uiFace}`;
+
+function SheetHandle() {
+  return (
+    <div className="flex shrink-0 justify-center pt-2 md:hidden" aria-hidden="true">
+      <span className="h-1 w-10 rounded-full bg-[#2A150C]" />
+    </div>
+  );
+}
+
+function EndGameIcon({ label, onEnd }: { label: string; onEnd: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={onEnd}
+      className="grid h-9 w-9 shrink-0 place-items-center border border-[#2A150C] bg-[#FAD5B3] text-[#2A150C]"
+    >
+      <X className="h-4 w-4" aria-hidden="true" />
+    </button>
+  );
+}
 
 function localInputValue(ms: number): string {
   const date = new Date(ms);
@@ -551,6 +573,7 @@ export function JoinPanel({
 
   return (
     <div className={panelClass}>
+      <SheetHandle />
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-5">
         <h1 className={`${questionType} ${ink}`}>{text.joinThisGame}</h1>
         <p className="font-mono text-3xl tracking-[0.28em] text-[#2A150C]">{code}</p>
@@ -594,7 +617,7 @@ export function JoinPanel({
 
 export function ScoreList({ rows }: { rows: { playerId: string; name: string; score: number }[] }) {
   return (
-    <ol className="pointer-events-none absolute top-16 left-3 z-40 w-44 border border-[#2A150C] bg-[#E2ECC0] text-[#2A150C]">
+    <ol className="pointer-events-none absolute top-[calc(4.75rem+env(safe-area-inset-top))] left-3 z-40 w-44 border border-[#2A150C] bg-[#E2ECC0] text-[#2A150C] xl:top-16">
       {rows.map((row, index) => (
         <li
           key={row.playerId}
@@ -734,7 +757,7 @@ function PlayerRow({ name, detail }: { name: string; detail: string }) {
   );
 }
 
-export function PlayOverlay({ state }: { state: EngineState }) {
+export function PlayOverlay({ state, onEnd }: { state: EngineState; onEnd: () => void }) {
   const cityId = state.cityIds[state.roundIndex];
   const city = cityId ? getPlace(cityId) : null;
   const part = state.playFormat === "quiz" && state.quizStep === 3 ? 1 : 0;
@@ -786,7 +809,7 @@ export function PlayOverlay({ state }: { state: EngineState }) {
         ) : null}
       </div>
 
-      <div className="pointer-events-none absolute bottom-0 left-0 right-36 z-20 px-3 pb-[env(safe-area-inset-bottom)]">
+      <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-20 px-3 pb-[env(safe-area-inset-bottom)] xl:right-36">
         <div className={`${glass} pointer-events-auto flex h-14 w-full items-center gap-3 px-3`}>
           <p className="shrink-0 font-mono text-[11px] uppercase tracking-[0.12em] text-[#2A150C] tabular-nums">
             {fill(text.round, {
@@ -805,6 +828,9 @@ export function PlayOverlay({ state }: { state: EngineState }) {
           >
             {timed && guessing && state.guessingEndsAt != null ? `${remaining.toFixed(1)}s` : ""}
           </p>
+          <span className="xl:hidden">
+            <EndGameIcon label={text.endGame} onEnd={onEnd} />
+          </span>
         </div>
       </div>
     </>
@@ -838,8 +864,8 @@ export function QuizCard({
   const feedback = state.phase === "QUIZ_FEEDBACK";
 
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
-      <section className={`${glass} flex h-[24.5rem] w-full max-w-md flex-col p-5`}>
+    <div className="absolute inset-0 z-20 flex items-center justify-center p-3 md:p-4">
+      <section className={`${glass} flex max-h-[calc(100%-1rem)] w-full max-w-[18rem] flex-col overflow-y-auto p-4 md:h-[24.5rem] md:max-h-none md:max-w-md md:p-5`}>
         <p className="h-5 font-mono text-[11px] leading-5 uppercase tracking-[0.16em] text-[#2f4a52] tabular-nums">
           {fill(text.round, {
             current: String(state.roundIndex + 1),
@@ -847,7 +873,7 @@ export function QuizCard({
           })}
           <span> · {fill(text.points, { score: formatScore(matchTotal(state)) })}</span>
         </p>
-        <p className="mt-3 h-[5.25rem] text-lg leading-7 font-medium text-[#2f4a52]">{card.prompt}</p>
+        <p className="mt-3 line-clamp-4 text-lg leading-7 font-medium text-[#2f4a52] md:h-[5.25rem] md:line-clamp-none">{card.prompt}</p>
         <p
           className={`mt-1 h-5 font-mono text-sm leading-5 tabular-nums ${remaining != null && remaining <= 2 ? "text-[#8a3d32]" : "text-[#2f4a52]"}`}
         >
@@ -881,6 +907,46 @@ export function QuizCard({
           })}
         </div>
       </section>
+    </div>
+  );
+}
+
+export function QuestionBar({ state, onEnd }: { state: EngineState; onEnd: () => void }) {
+  const id = state.cityIds[state.roundIndex];
+  const place = id ? getPlace(id) : null;
+  const text = messages(state.locale);
+  const timed = state.mapDifficulty !== "kids";
+  const asking = state.phase === "QUIZ_QUESTION";
+  const now = useNow(timed && asking && state.guessingEndsAt != null);
+  if (!place || state.seed == null || (state.quizStep !== 0 && state.quizStep !== 1)) return null;
+  const card = quizCard(state.seed, state.roundIndex, state.quizStep, place, quizPool(state.region), state.locale, {
+    category: state.questionCategory,
+    difficulty: state.mapDifficulty,
+    placeMode: state.placeMode,
+    region: state.region,
+  });
+  const remaining =
+    state.guessingEndsAt == null
+      ? null
+      : Math.max(0, Math.min(GUESS_MS / 1000, (state.guessingEndsAt - now) / 1000));
+
+  return (
+    <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-20 px-3 pb-[env(safe-area-inset-bottom)] xl:hidden">
+      <div className={`${glass} pointer-events-auto flex h-14 w-full items-center gap-3 px-3`}>
+        <p className="shrink-0 font-mono text-[11px] uppercase tracking-[0.12em] text-[#2A150C] tabular-nums">
+          {fill(text.round, {
+            current: String(state.roundIndex + 1),
+            total: String(state.cityIds.length),
+          })}
+        </p>
+        <p className="min-w-0 flex-1 truncate text-sm font-medium text-[#2A150C]">{card.prompt}</p>
+        <p
+          className={`w-12 shrink-0 text-right font-mono text-sm tabular-nums ${remaining != null && remaining <= 2 ? "text-[#8a3d32]" : "text-[#2A150C]"}`}
+        >
+          {remaining != null && asking ? `${remaining.toFixed(1)}s` : ""}
+        </p>
+        <EndGameIcon label={text.endGame} onEnd={onEnd} />
+      </div>
     </div>
   );
 }

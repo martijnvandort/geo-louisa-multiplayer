@@ -5,7 +5,7 @@ import { MapStage, type MapArc, type MapPin } from "@/components/map-stage";
 import { approachPoint, countryOutline } from "@/lib/country-shapes";
 import { approachDivision, divisionAt } from "@/lib/provinces";
 import { provinceOutline } from "@/lib/provinces";
-import { FinalScreen, JoinPanel, LobbyScreen, MapTitle, PlayOverlay, QuizCard, ScoreList, WaitingScreen } from "@/components/game/screens";
+import { FinalScreen, JoinPanel, LobbyScreen, MapTitle, PlayOverlay, QuestionBar, QuizCard, ScoreList, WaitingScreen } from "@/components/game/screens";
 import { useRoom } from "@/components/game/use-room";
 import { useSharedRoom, type HostSettings } from "@/components/game/use-shared-room";
 import {
@@ -356,9 +356,22 @@ export function GeosenseApp({ playerId, inviteCode = null }: { playerId: string;
     window.history.replaceState(null, "", window.location.pathname);
   }
 
+  function leaveRound() {
+    if (sharedPlay) leaveShared();
+    dispatch({ type: "LEAVE" });
+  }
+
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-[#e2f6fe] text-[#2f4a52]">
-      <div className={`absolute top-0 left-0 ${inRound ? "right-36" : "right-0"} ${playing ? "bottom-[calc(3.5rem+env(safe-area-inset-bottom))]" : "bottom-0"}`}>
+      <div
+        className={`absolute top-0 left-0 right-0 ${inRound ? "xl:right-36" : ""} ${
+          playing
+            ? "bottom-[calc(3.5rem+env(safe-area-inset-bottom))]"
+            : quizzing
+              ? "max-xl:bottom-[calc(3.5rem+env(safe-area-inset-bottom))]"
+              : "bottom-0"
+        }`}
+      >
       <MapStage
         difficulty={view.mapDifficulty}
         region={mapRegion}
@@ -367,6 +380,7 @@ export function GeosenseApp({ playerId, inviteCode = null }: { playerId: string;
         arcs={presentation.arcs}
         highlight={presentation.highlight}
         onPlace={onPlace}
+        zoomLabel={text.zoomIn}
       />
       <MapTitle region={view.region} locale={view.locale} />
       {view.phase === "LOBBY" && !showJoin ? (
@@ -461,15 +475,13 @@ export function GeosenseApp({ playerId, inviteCode = null }: { playerId: string;
       ) : null}
       </div>
       {sharedPlay && shared.room?.status === "live" ? <ScoreList rows={shared.room.scoreboard} /> : null}
-      {playing ? <PlayOverlay state={view} /> : null}
+      {playing ? <PlayOverlay state={view} onEnd={leaveRound} /> : null}
+      {quizzing ? <QuestionBar state={view} onEnd={leaveRound} /> : null}
       {inRound ? (
-        <div className="pointer-events-none absolute inset-y-0 right-0 z-30 flex w-36 items-center px-3">
+        <div className="pointer-events-none absolute inset-y-0 right-0 z-30 hidden w-36 items-center px-3 xl:flex">
           <button
             type="button"
-            onClick={() => {
-              if (sharedPlay) leaveShared();
-              dispatch({ type: "LEAVE" });
-            }}
+            onClick={leaveRound}
             className="pointer-events-auto h-10 w-full border border-[#2A150C] bg-[#FAD5B3] text-sm font-medium text-[#2A150C]"
           >
             {text.endGame}

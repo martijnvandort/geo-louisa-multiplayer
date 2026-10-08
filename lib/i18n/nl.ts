@@ -58,6 +58,7 @@ export const nl: Messages = {
   playQuiz: "Quiz spelen",
   stop: "Stop",
   endGame: "Einde spel",
+  zoomIn: "Inzoomen",
   clickLocks: "Klik op de kaart. Daarmee leg je het antwoord vast.",
   waitingPin: "Vastgezet. Wachten op de andere speler.",
   round: "Ronde {current}/{total}",

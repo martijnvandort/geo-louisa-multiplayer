@@ -58,6 +58,7 @@ export const en: Messages = {
   playQuiz: "Play Quiz",
   stop: "Stop",
   endGame: "End Game",
+  zoomIn: "Zoom in",
   clickLocks: "Click the map. That locks the answer.",
   waitingPin: "Locked. Waiting for the other pin.",
   round: "Round {current}/{total}",

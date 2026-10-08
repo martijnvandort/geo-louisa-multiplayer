@@ -57,6 +57,7 @@ export type Messages = {
   playQuiz: string;
   stop: string;
   endGame: string;
+  zoomIn: string;
   clickLocks: string;
   waitingPin: string;
   round: string;
