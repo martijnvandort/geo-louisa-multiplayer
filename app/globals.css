@@ -30,6 +30,23 @@ body {
   height: 22px;
 }
 
+.geosense-pin-name {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-family: var(--font-ui), "DM Sans", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #2a150c;
+  background: #fbf6d2;
+  border: 1px solid #2a150c;
+  padding: 1px 4px;
+  pointer-events: none;
+}
+
 .geosense-pin-dot {
   position: absolute;
   inset: 4px;

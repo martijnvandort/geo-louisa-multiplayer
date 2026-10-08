@@ -47,6 +47,7 @@ export interface MapPin {
   color: string;
   beacon?: boolean;
   capital?: boolean;
+  label?: string;
 }
 
 interface StyleLayer {
@@ -106,6 +107,7 @@ interface GeoMap {
 interface MarkerHandle {
   setLngLat(lngLat: [number, number]): MarkerHandle;
   addTo(map: GeoMap): MarkerHandle;
+  getElement?(): HTMLElement;
   remove(): void;
 }
 
@@ -513,7 +515,19 @@ function releaseMarkers(markers: { current: Map<string, MarkerHandle> }) {
   markers.current.clear();
 }
 
-function pinElement(color: string, beacon: boolean, capital: boolean) {
+function pinLabel(root: HTMLElement, label?: string) {
+  const existing = root.querySelector(".geosense-pin-name");
+  if (!label) {
+    existing?.remove();
+    return;
+  }
+  const tag = existing ?? document.createElement("span");
+  tag.className = "geosense-pin-name";
+  tag.textContent = label;
+  if (!existing) root.append(tag);
+}
+
+function pinElement(color: string, beacon: boolean, capital: boolean, label?: string) {
   const root = document.createElement("div");
   root.className = capital
     ? "geosense-pin geosense-capital"
@@ -524,6 +538,7 @@ function pinElement(color: string, beacon: boolean, capital: boolean) {
   const dot = document.createElement("span");
   dot.className = "geosense-pin-dot";
   root.append(dot);
+  pinLabel(root, label);
   if (beacon && !capital) {
     const ring = document.createElement("span");
     ring.className = "geosense-pin-pulse";
@@ -768,13 +783,15 @@ export function MapStage({
       let marker = markersRef.current.get(pin.id);
       if (!marker) {
         marker = new Marker({
-          element: pinElement(pin.color, Boolean(pin.beacon), Boolean(pin.capital)),
+          element: pinElement(pin.color, Boolean(pin.beacon), Boolean(pin.capital), pin.label),
           anchor: "center",
         });
         marker.setLngLat(pin.coordinates).addTo(map);
         markersRef.current.set(pin.id, marker);
       } else {
         marker.setLngLat(pin.coordinates);
+        const element = marker.getElement?.();
+        if (element) pinLabel(element, pin.label);
       }
     }
     for (const [id, marker] of markersRef.current) {

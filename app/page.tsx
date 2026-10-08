@@ -5,9 +5,18 @@ import { GeosenseApp } from "@/components/game/geosense-app";
 
 export default function Home() {
   const [playerId, setPlayerId] = useState<string | null>(null);
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setPlayerId(crypto.randomUUID()), 0);
+    const key = "geosense-player";
+    const existing = window.sessionStorage.getItem(key);
+    const id = existing || crypto.randomUUID();
+    if (!existing) window.sessionStorage.setItem(key, id);
+    const code = new URLSearchParams(window.location.search).get("room") ?? "";
+    const timer = window.setTimeout(() => {
+      setPlayerId(id);
+      if (/^[A-Z0-9]{6}$/.test(code.toUpperCase())) setInviteCode(code.toUpperCase());
+    }, 0);
     return () => window.clearTimeout(timer);
   }, []);
 
@@ -19,5 +28,5 @@ export default function Home() {
     );
   }
 
-  return <GeosenseApp playerId={playerId} />;
+  return <GeosenseApp playerId={playerId} inviteCode={inviteCode} />;
 }

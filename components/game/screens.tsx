@@ -10,6 +10,7 @@ import { useNow } from "@/components/game/count-up";
 import { Button } from "@/components/ui/button";
 import type { EngineState, MapDifficulty, PlayFormat } from "@/lib/game-engine";
 import { matchTotal } from "@/lib/game-engine";
+import type { PublicRoom, RecapQuestion } from "@/lib/room-types";
 import { fill, localPlaceName, LOCALE_IDS, messages, type LocaleId, type Messages } from "@/lib/i18n";
 import { formatKm, formatScore, GUESS_MS } from "@/lib/geo";
 import { placeNote } from "@/lib/place";
@@ -116,6 +117,13 @@ export function LobbyScreen({
   onNickname,
   onLocale,
   onPlay,
+  playMode,
+  onPlayMode,
+  startsAt,
+  onStartsAt,
+  sharedRoom,
+  sharedError,
+  onJoinCode,
 }: {
   state: EngineState;
   onDifficulty: (difficulty: MapDifficulty) => void;
@@ -127,6 +135,13 @@ export function LobbyScreen({
   onPlay: (format: PlayFormat) => void;
   onCreate: () => void;
   onJoin: (code: string) => void;
+  playMode: "single" | "multi";
+  onPlayMode: (mode: "single" | "multi") => void;
+  startsAt: number;
+  onStartsAt: (value: number) => void;
+  sharedRoom: PublicRoom | null;
+  sharedError: string | null;
+  onJoinCode: (code: string, name: string) => void;
 }) {
   const text = messages(state.locale);
   const quizAvailable = placeCount(state.region, quizPlaceMode(state.region)) > 0;
@@ -279,12 +294,23 @@ export function LobbyScreen({
           </FieldRow>
           <p className={`h-4 text-right text-xs leading-4 ${laterSteps ? "text-[#5C3014]" : "text-[#7A4E28]"}`}>{levelNote}</p>
         </div>
+        <PlayModeStep
+          locale={state.locale}
+          playMode={playMode}
+          onPlayMode={onPlayMode}
+          startsAt={startsAt}
+          onStartsAt={onStartsAt}
+          room={sharedRoom}
+          error={sharedError}
+          onNickname={onNickname}
+          onJoinCode={onJoinCode}
+        />
       </div>
       <footer className="flex shrink-0 items-center justify-end border-t-[0.5px] border-[#2A150C] px-4 py-2">
         <button
           type="button"
           className="h-9 min-w-[104px] border border-[#2A150C] bg-[#FAD5B3] px-4 text-sm font-medium text-[#2A150C] disabled:opacity-40"
-          disabled={!step1Done || !quizAvailable}
+          disabled={!step1Done || !quizAvailable || playMode === "multi"}
           onClick={() => onPlay("quiz")}
         >
           {text.play}
@@ -318,6 +344,269 @@ function FieldRow({
         />
       </span>
     </div>
+  );
+}
+
+const panelClass = `pointer-events-auto absolute top-0 bottom-0 left-0 z-20 flex h-dvh w-[min(480px,calc(100%-48px))] flex-col bg-[#E2ECC0] text-[#2A150C] ${uiFace}`;
+
+function localInputValue(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function formatRemaining(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`;
+  return `${pad(minutes)}:${pad(seconds)}`;
+}
+
+export function CountdownLine({ startsAt, template }: { startsAt: number; template: string }) {
+  const now = useNow(startsAt > 0);
+  const remaining = Math.max(0, startsAt - now);
+  return <p className="font-mono text-lg tabular-nums text-[#2A150C]">{fill(template, { time: formatRemaining(remaining) })}</p>;
+}
+
+function PlayerNames({ label, players }: { label: string; players: { id: string; name: string }[] }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-[#5C3014]">{label}</p>
+      {players.length === 0 ? (
+        <p className="text-sm text-[#5C3014]">—</p>
+      ) : (
+        <ul className="space-y-1">
+          {players.map((player) => (
+            <li key={player.id} className="border border-[#2A150C] bg-[#FBF6D2] px-2 py-1 text-sm text-[#2A150C]">
+              {player.name}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function PlayModeStep({
+  locale,
+  playMode,
+  onPlayMode,
+  startsAt,
+  onStartsAt,
+  room,
+  error,
+  onNickname,
+  onJoinCode,
+}: {
+  locale: LocaleId;
+  playMode: "single" | "multi";
+  onPlayMode: (mode: "single" | "multi") => void;
+  startsAt: number;
+  onStartsAt: (value: number) => void;
+  room: PublicRoom | null;
+  error: string | null;
+  onNickname: (nickname: string) => void;
+  onJoinCode: (code: string, name: string) => void;
+}) {
+  const text = messages(locale);
+  const [hostName, setHostName] = useState("");
+  const [joinName, setJoinName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [origin, setOrigin] = useState("");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setOrigin(window.location.origin), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const joinUrl = origin && room ? `${origin}/?room=${room.code}` : "";
+  const choiceClass = (selected: boolean) =>
+    `box-border h-[34px] shrink-0 border border-[#2A150C] px-3 text-xs font-normal text-[#2A150C] ${selected ? "bg-[#FAD5B3]" : "bg-[#FBF6D2]"}`;
+
+  return (
+    <div className="space-y-2">
+      <h2 className={`${questionType} flex items-baseline gap-2 ${ink}`}>
+        <span className="shrink-0 tabular-nums">4</span>
+        <span>{text.howPlay}</span>
+      </h2>
+      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={text.howPlay}>
+        <button type="button" aria-pressed={playMode === "single"} className={choiceClass(playMode === "single")} onClick={() => onPlayMode("single")}>
+          {text.singlePlayer}
+        </button>
+        <button type="button" aria-pressed={playMode === "multi"} className={choiceClass(playMode === "multi")} onClick={() => onPlayMode("multi")}>
+          {text.multiplayer}
+        </button>
+      </div>
+      {playMode === "single" ? (
+        <form
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!joinName.trim() || joinCode.trim().length < 6) return;
+            onJoinCode(joinCode, joinName);
+          }}
+        >
+          <input
+            aria-label={text.whatName}
+            value={joinName}
+            onChange={(event) => setJoinName(event.target.value.slice(0, 18))}
+            placeholder={text.whatName}
+            className="box-border h-[34px] w-[152px] border border-[#2A150C] bg-[#FBF6D2] px-3 text-xs text-[#2A150C] outline-none"
+          />
+          <input
+            aria-label={text.gameCode}
+            value={joinCode}
+            onChange={(event) => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))}
+            placeholder={text.gameCode}
+            className="box-border h-[34px] w-[108px] border border-[#2A150C] bg-[#FBF6D2] px-3 font-mono text-xs tracking-[0.14em] text-[#2A150C] uppercase outline-none"
+          />
+          <button type="submit" className="box-border h-[34px] border border-[#2A150C] bg-[#FAD5B3] px-3 text-xs text-[#2A150C]">
+            {text.join}
+          </button>
+        </form>
+      ) : (
+        <div className="space-y-2">
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-sm text-[#2A150C]">{text.whatName}</span>
+            <input
+              aria-label={text.whatName}
+              value={hostName}
+              onChange={(event) => {
+                const next = event.target.value.slice(0, 18);
+                setHostName(next);
+                onNickname(next);
+              }}
+              className={`${fieldClass} bg-[#FBF6D2]`}
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-sm text-[#2A150C]">{text.startWhen}</span>
+            <input
+              type="datetime-local"
+              aria-label={text.startWhen}
+              value={localInputValue(startsAt)}
+              onChange={(event) => {
+                const next = new Date(event.target.value).getTime();
+                if (Number.isFinite(next)) onStartsAt(next);
+              }}
+              className="box-border h-[34px] w-[210px] border border-[#2A150C] bg-[#FBF6D2] px-2 text-xs text-[#2A150C] outline-none"
+            />
+          </label>
+          <div>
+            <p className="text-xs text-[#5C3014]">{text.gameCode}</p>
+            <p className="font-mono text-2xl tracking-[0.28em] text-[#2A150C]">{room?.code ?? "······"}</p>
+          </div>
+          <div>
+            <p className="text-xs text-[#5C3014]">{text.joinLink}</p>
+            <p className="truncate text-xs text-[#2A150C]">{joinUrl || "—"}</p>
+            <button
+              type="button"
+              className="mt-1 h-[34px] border border-[#2A150C] bg-[#FBF6D2] px-3 text-xs text-[#2A150C]"
+              onClick={() => {
+                if (!joinUrl) return;
+                void navigator.clipboard.writeText(joinUrl).then(() => {
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1600);
+                });
+              }}
+            >
+              {copied ? text.copied : text.copyLink}
+            </button>
+          </div>
+          {room ? (
+            <CountdownLine startsAt={room.startsAt} template={text.startsIn} />
+          ) : null}
+          <PlayerNames label={text.playersWaiting} players={room?.players ?? []} />
+          <p className="text-xs text-[#5C3014]">{text.sameQuestions}</p>
+        </div>
+      )}
+      {error ? <p className="text-sm text-[#8a3d32]">{error}</p> : null}
+    </div>
+  );
+}
+
+export function JoinPanel({
+  locale,
+  code,
+  joined,
+  players,
+  startsAt,
+  error,
+  onJoin,
+}: {
+  locale: LocaleId;
+  code: string;
+  joined: boolean;
+  players: { id: string; name: string }[];
+  startsAt: number;
+  error: string | null;
+  onJoin: (name: string) => void;
+}) {
+  const text = messages(locale);
+  const [name, setName] = useState("");
+
+  return (
+    <div className={panelClass}>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-5">
+        <h1 className={`${questionType} ${ink}`}>{text.joinThisGame}</h1>
+        <p className="font-mono text-3xl tracking-[0.28em] text-[#2A150C]">{code}</p>
+        {startsAt > 0 ? (
+          <CountdownLine startsAt={startsAt} template={text.startsIn} />
+        ) : null}
+        <PlayerNames label={text.playersWaiting} players={players} />
+        <p className="text-xs text-[#5C3014]">{text.sameQuestions}</p>
+        {joined ? null : (
+          <form
+            className="space-y-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!name.trim()) return;
+              onJoin(name);
+            }}
+          >
+            <label className="block text-sm text-[#2A150C]">
+              {text.whatName}
+              <input
+                aria-label={text.whatName}
+                value={name}
+                onChange={(event) => setName(event.target.value.slice(0, 18))}
+                className="mt-1 box-border h-[34px] w-full border border-[#2A150C] bg-[#FBF6D2] px-3 text-sm text-[#2A150C] outline-none"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={!name.trim()}
+              className="h-9 border border-[#2A150C] bg-[#FAD5B3] px-4 text-sm text-[#2A150C] disabled:opacity-40"
+            >
+              {text.join}
+            </button>
+          </form>
+        )}
+        {error ? <p className="text-sm text-[#8a3d32]">{error}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+export function ScoreList({ rows }: { rows: { playerId: string; name: string; score: number }[] }) {
+  return (
+    <ol className="pointer-events-none absolute top-16 left-3 z-40 w-44 border border-[#2A150C] bg-[#E2ECC0] text-[#2A150C]">
+      {rows.map((row, index) => (
+        <li
+          key={row.playerId}
+          className="flex items-baseline justify-between gap-2 border-b border-[#2A150C] px-2 py-1 text-xs last:border-b-0"
+        >
+          <span className="min-w-0 truncate">
+            {index + 1}. {row.name}
+          </span>
+          <span className="shrink-0 font-mono tabular-nums">{formatScore(row.score)}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -569,18 +858,21 @@ export function QuizCard({
             const chosen = state.quizChoice === choice;
             const right = feedback && choice === card.correct;
             const wrong = feedback && chosen && !state.quizCorrect;
+            const picked = !feedback && chosen;
             return (
               <button
                 key={choice}
                 type="button"
-                disabled={feedback}
+                disabled={feedback || (state.mode === "multi" && state.submitted)}
                 onClick={() => onChoose(choice)}
                 className={`h-10 shrink-0 truncate rounded-full border px-3 text-sm font-medium ${
                   right
                     ? "border-[#2A150C] bg-[#E2ECC0] text-[#2A150C]"
                     : wrong
                       ? "border-[#2A150C] bg-[#F8AFAF] text-[#2A150C]"
-                      : "border-[#d0d0d0] bg-white text-[#2f4a52]"
+                      : picked
+                        ? "border-[#2A150C] bg-[#FAD5B3] text-[#2A150C]"
+                        : "border-[#d0d0d0] bg-white text-[#2f4a52]"
                 }`}
               >
                 {choice}
@@ -593,8 +885,38 @@ export function QuizCard({
   );
 }
 
-export function FinalScreen({ state, onAgain }: { state: EngineState; onAgain: () => void }) {
-  const total = matchTotal(state);
+function recapAnswer(text: ReturnType<typeof messages>, question: RecapQuestion, answer: RecapQuestion["answers"][number]): string {
+  if (question.kind === "choice") return answer.choice?.trim() ? answer.choice : text.noAnswer;
+  if (!answer.confirmed) return text.noPin;
+  if (question.binary) return answer.correct ? text.rightAnswer : text.wrongAnswer;
+  const place = answer.place?.trim();
+  const distance = formatKm(answer.distanceKm);
+  return place ? `${place} · ${distance}` : distance;
+}
+
+export function FinalScreen({
+  state,
+  onAgain,
+  recap = null,
+}: {
+  state: EngineState;
+  onAgain: () => void;
+  recap?: RecapQuestion[] | null;
+}) {
+  const standings = recap
+    ? [...recap.reduce((map, question) => {
+        for (const answer of question.answers) {
+          const row = map.get(answer.playerId) ?? { name: answer.name, score: 0 };
+          row.score += answer.points;
+          map.set(answer.playerId, row);
+        }
+        return map;
+      }, new Map<string, { name: string; score: number }>()).values()].sort((a, b) => b.score - a.score)
+    : [];
+  const total = recap
+    ? (standings.find((row) => row.name === state.localName)?.score ??
+      recap.reduce((sum, question) => sum + (question.answers.find((answer) => answer.playerId === state.playerId)?.points ?? 0), 0))
+    : matchTotal(state);
   const text = messages(state.locale);
 
   useEffect(() => {
@@ -632,6 +954,41 @@ export function FinalScreen({ state, onAgain }: { state: EngineState; onAgain: (
         </div>
         <p className="mt-3 text-xs font-medium text-[#2f4a52]">{text.totalScore}</p>
         <p className="font-mono text-4xl tabular-nums text-[#2f4a52]">{formatScore(total)}</p>
+        {standings.length > 0 ? (
+          <ol className="mt-3 space-y-1">
+            {standings.map((row, index) => (
+              <li key={`${row.name}-${index}`} className="flex items-baseline justify-between gap-3 text-sm text-[#2f4a52]">
+                <span>
+                  {index + 1}. {row.name}
+                </span>
+                <span className="font-mono tabular-nums">{formatScore(row.score)}</span>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        {recap ? (
+          <ol className="mt-4 space-y-3">
+            {recap.map((question, index) => (
+              <li key={`${question.roundIndex}-${question.step}`} className="text-sm text-[#2f4a52]">
+                <p>
+                  {index + 1}. {question.prompt}
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {question.answers.map((answer) => (
+                    <li key={answer.playerId}>
+                      {answer.name} — {recapAnswer(text, question, answer)}
+                    </li>
+                  ))}
+                </ul>
+                {question.kind === "choice" && question.correct ? (
+                  <p>{fill(text.answerWas, { name: question.correct })}</p>
+                ) : null}
+                <p>{question.winnerName ? fill(text.cameFirst, { name: question.winnerName }) : text.nobodyFirst}</p>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        {recap ? null : (
         <ol className="mt-4 space-y-2">
           {state.history.map((round) => {
             const city = getPlace(round.cityId);
@@ -660,6 +1017,7 @@ export function FinalScreen({ state, onAgain }: { state: EngineState; onAgain: (
             );
           })}
         </ol>
+        )}
         <Button type="button" size="lg" className="mt-5 w-full" onClick={onAgain}>
           {text.playAgain}
         </Button>

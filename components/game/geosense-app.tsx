@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { MapStage, type MapArc, type MapPin } from "@/components/map-stage";
 import { approachPoint, countryOutline } from "@/lib/country-shapes";
 import { approachDivision, divisionAt } from "@/lib/provinces";
 import { provinceOutline } from "@/lib/provinces";
-import { FinalScreen, LobbyScreen, MapTitle, PlayOverlay, QuizCard, WaitingScreen } from "@/components/game/screens";
+import { FinalScreen, JoinPanel, LobbyScreen, MapTitle, PlayOverlay, QuizCard, ScoreList, WaitingScreen } from "@/components/game/screens";
 import { useRoom } from "@/components/game/use-room";
+import { useSharedRoom, type HostSettings } from "@/components/game/use-shared-room";
 import {
   buildLockGuess,
   buildMiss,
@@ -21,20 +22,78 @@ import { messages } from "@/lib/i18n";
 import { COLOR, greatCircleSegments, PREVIEW_MS, RESULT_MS } from "@/lib/geo";
 import { countryAt, loadCountries } from "@/lib/place";
 import type { EngineState, GuessWire, PlayFormat } from "@/lib/game-engine";
-import { createRoomCode, randomSeed } from "@/lib/room";
+import { createRoomCode, normalizeRoomCode, randomSeed } from "@/lib/room";
+import { viewFromRoom } from "@/lib/room-view";
 
-export function GeosenseApp({ playerId }: { playerId: string }) {
+export function GeosenseApp({ playerId, inviteCode = null }: { playerId: string; inviteCode?: string | null }) {
   const [state, dispatch] = useReducer(reducer, playerId, createInitialState);
+  const shared = useSharedRoom(playerId);
+  const watchRoom = shared.watch;
+  const updateRoom = shared.update;
+  const [playMode, setPlayMode] = useState<"single" | "multi">("single");
+  const [leftInvite, setLeftInvite] = useState(false);
+  const roomInvite = leftInvite ? null : inviteCode;
+  const [startsAt, setStartsAt] = useState(() => Date.now() + 10 * 60 * 1000);
+  const [draftPin, setDraftPin] = useState<[number, number] | null>(null);
+  const [draftChoice, setDraftChoice] = useState<string | null>(null);
+  const [draftSent, setDraftSent] = useState(false);
   const stateRef = useRef(state);
+  const sharedRef = useRef(shared);
+  const sharedPlayRef = useRef(false);
+  const draftSentRef = useRef(false);
   const { send } = useRoom(state, dispatch);
   const sendRef = useRef(send);
   useEffect(() => {
     stateRef.current = state;
     sendRef.current = send;
+    sharedRef.current = shared;
+    draftSentRef.current = draftSent;
   });
   useEffect(() => {
     void loadCountries();
   }, []);
+
+  useEffect(() => {
+    if (roomInvite) watchRoom(roomInvite);
+  }, [roomInvite, watchRoom]);
+
+  const inRoom = Boolean(shared.room?.players.some((player) => player.id === playerId));
+  const guestLobby = Boolean(shared.room && inRoom && shared.room.hostId !== playerId && shared.room.status === "lobby");
+  const sharedPlay = Boolean(shared.room && inRoom && (shared.room.status === "live" || shared.room.status === "done"));
+  const questionKey = shared.room?.question ? `${shared.room.question.roundIndex}:${shared.room.question.step}:${shared.room.status}` : shared.room?.status ?? "";
+  const [seenQuestion, setSeenQuestion] = useState(questionKey);
+  if (seenQuestion !== questionKey) {
+    setSeenQuestion(questionKey);
+    setDraftPin(null);
+    setDraftChoice(null);
+    setDraftSent(false);
+  }
+
+  useEffect(() => {
+    sharedPlayRef.current = sharedPlay;
+  });
+
+  const hosting = playMode === "multi" && shared.room?.hostId === playerId && shared.room.status === "lobby";
+  const settingsKey = JSON.stringify({
+    name: state.nickname,
+    startsAt,
+    region: state.region,
+    questionCategory: state.questionCategory,
+    mapDifficulty: state.mapDifficulty,
+    placeMode: state.placeMode,
+    locale: state.locale,
+  });
+
+  useEffect(() => {
+    if (!hosting) return;
+    const settings = JSON.parse(settingsKey) as HostSettings;
+    const timer = window.setTimeout(() => {
+      void updateRoom(settings).catch((error: Error) => {
+        console.error(error);
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [hosting, settingsKey, updateRoom]);
 
   const startedRoom = useRef<string | null>(null);
   const revealSent = useRef(-1);
@@ -205,6 +264,38 @@ export function GeosenseApp({ playerId }: { playerId: string }) {
   }, [state.phase, state.quizStep, state.roundIndex]);
 
   const onPlace = useCallback((coordinates: [number, number]) => {
+    if (sharedPlayRef.current) {
+      const live = sharedRef.current.room;
+      const question = live?.question;
+      if (!live || !question || question.step < 2 || question.revealUntil || draftSentRef.current) return;
+      resumeAudio();
+      playClick();
+      setDraftPin(coordinates);
+      const region = live.settings.region;
+      const locate =
+        region === "netherlands" || region === "united-states"
+          ? Promise.resolve(divisionAt(region, coordinates))
+          : countryAt(coordinates);
+      void locate.then((place) => {
+        const latest = sharedRef.current.room;
+        if (!latest?.question || latest.question.revealUntil || draftSentRef.current) return;
+        if (latest.question.roundIndex !== question.roundIndex || latest.question.step !== question.step) return;
+        draftSentRef.current = true;
+        setDraftSent(true);
+        void sharedRef.current
+          .answer({
+            roundIndex: question.roundIndex,
+            step: question.step,
+            coordinates,
+            place,
+          })
+          .catch(() => {
+            draftSentRef.current = false;
+            setDraftSent(false);
+          });
+      });
+      return;
+    }
     const current = stateRef.current;
     if (current.phase !== "GUESSING_ACTIVE" || current.submitted || locking.current) return;
     locking.current = true;
@@ -242,31 +333,43 @@ export function GeosenseApp({ playerId }: { playerId: string }) {
     dispatch({ type: "START_SOLO", now: Date.now(), seed: randomSeed(), format });
   }, []);
 
-  const presentation = useMemo(() => presentationFrom(state), [state]);
-  const lobbyMap = useRef(state.region);
-  if (state.phase !== "LOBBY") lobbyMap.current = state.region;
-  const mapRegion = state.phase === "LOBBY" ? lobbyMap.current : state.region;
+  const view =
+    sharedPlay && shared.room
+      ? viewFromRoom(shared.room, playerId, { pin: draftPin, submitted: draftSent, choice: draftChoice })
+      : state;
+  const presentation = useMemo(() => presentationFrom(view), [view]);
+  const [settledRegion, setSettledRegion] = useState(state.region);
+  if (state.phase !== "LOBBY" && settledRegion !== state.region) setSettledRegion(state.region);
+  const mapRegion = sharedPlay ? view.region : state.phase === "LOBBY" ? settledRegion : state.region;
+  const showJoin = (guestLobby || (Boolean(roomInvite) && !inRoom)) && !sharedPlay;
 
   const playing =
-    state.phase === "ROUND_PREVIEW" || state.phase === "GUESSING_ACTIVE" || state.phase === "ROUND_RESULT";
-  const quizzing = state.phase === "QUIZ_QUESTION" || state.phase === "QUIZ_FEEDBACK";
+    view.phase === "ROUND_PREVIEW" || view.phase === "GUESSING_ACTIVE" || view.phase === "ROUND_RESULT";
+  const quizzing = view.phase === "QUIZ_QUESTION" || view.phase === "QUIZ_FEEDBACK";
   const inRound = playing || quizzing;
-  const text = messages(state.locale);
+  const text = messages(view.locale);
+
+  function leaveShared() {
+    shared.leaveLocal();
+    setPlayMode("single");
+    setLeftInvite(true);
+    window.history.replaceState(null, "", window.location.pathname);
+  }
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-[#e2f6fe] text-[#2f4a52]">
       <div className={`absolute top-0 left-0 ${inRound ? "right-36" : "right-0"} ${playing ? "bottom-[calc(3.5rem+env(safe-area-inset-bottom))]" : "bottom-0"}`}>
       <MapStage
-        difficulty={state.mapDifficulty}
+        difficulty={view.mapDifficulty}
         region={mapRegion}
-        interactive={state.phase === "GUESSING_ACTIVE" && !state.submitted}
+        interactive={view.phase === "GUESSING_ACTIVE" && !view.submitted}
         pins={presentation.pins}
         arcs={presentation.arcs}
         highlight={presentation.highlight}
         onPlace={onPlace}
       />
-      <MapTitle region={state.region} locale={state.locale} />
-      {state.phase === "LOBBY" ? (
+      <MapTitle region={view.region} locale={view.locale} />
+      {view.phase === "LOBBY" && !showJoin ? (
         <LobbyScreen
           state={state}
           onDifficulty={(difficulty) => dispatch({ type: "SET_DIFFICULTY", difficulty })}
@@ -284,27 +387,89 @@ export function GeosenseApp({ playerId }: { playerId: string }) {
             resumeAudio();
             dispatch({ type: "JOIN_ROOM", code });
           }}
+          playMode={playMode}
+          onPlayMode={(mode) => {
+            setPlayMode(mode);
+            if (mode !== "multi") return;
+            if (shared.room?.hostId === playerId && shared.room.status === "lobby") return;
+            void shared.create({
+              name: state.nickname || "Host",
+              startsAt,
+              region: state.region,
+              questionCategory: state.questionCategory,
+              mapDifficulty: state.mapDifficulty,
+              placeMode: state.placeMode,
+              locale: state.locale,
+            });
+          }}
+          startsAt={startsAt}
+          onStartsAt={setStartsAt}
+          sharedRoom={playMode === "multi" ? shared.room : null}
+          sharedError={shared.error}
+          onJoinCode={(code, name) => {
+            void shared.join(normalizeRoomCode(code), name);
+          }}
         />
       ) : null}
-      {state.phase === "WAITING_PLAYER" ? (
-        <WaitingScreen state={state} onLeave={() => dispatch({ type: "LEAVE" })} />
+      {showJoin ? (
+        <JoinPanel
+          locale={shared.room?.settings.locale ?? state.locale}
+          code={shared.room?.code ?? roomInvite ?? ""}
+          joined={guestLobby}
+          players={shared.room?.players ?? []}
+          startsAt={shared.room?.startsAt ?? 0}
+          error={shared.error}
+          onJoin={(name) => {
+            const code = roomInvite ?? shared.room?.code;
+            if (!code) return;
+            void shared.join(code, name);
+          }}
+        />
+      ) : null}
+      {view.phase === "WAITING_PLAYER" && !showJoin ? (
+        <WaitingScreen state={view} onLeave={() => dispatch({ type: "LEAVE" })} />
       ) : null}
       {quizzing ? (
         <QuizCard
-          state={state}
-          onChoose={(choice) => dispatch({ type: "QUIZ_CHOOSE", choice })}
+          state={view}
+          onChoose={(choice) => {
+            const question = shared.room?.question;
+            if (sharedPlay && question && question.step <= 1) {
+              if (draftSent) return;
+              setDraftChoice(choice);
+              setDraftSent(true);
+              draftSentRef.current = true;
+              void shared.answer({ roundIndex: question.roundIndex, step: question.step, choice }).catch(() => {
+                draftSentRef.current = false;
+                setDraftSent(false);
+              });
+              return;
+            }
+            dispatch({ type: "QUIZ_CHOOSE", choice });
+          }}
         />
       ) : null}
-      {state.phase === "FINAL_RESULTS" ? (
-        <FinalScreen state={state} onAgain={() => dispatch({ type: "PLAY_AGAIN" })} />
+      {view.phase === "FINAL_RESULTS" ? (
+        <FinalScreen
+          state={view}
+          recap={shared.room?.status === "done" ? shared.room.recap : null}
+          onAgain={() => {
+            leaveShared();
+            dispatch({ type: "PLAY_AGAIN" });
+          }}
+        />
       ) : null}
       </div>
-      {playing ? <PlayOverlay state={state} /> : null}
+      {sharedPlay && shared.room?.status === "live" ? <ScoreList rows={shared.room.scoreboard} /> : null}
+      {playing ? <PlayOverlay state={view} /> : null}
       {inRound ? (
         <div className="pointer-events-none absolute inset-y-0 right-0 z-30 flex w-36 items-center px-3">
           <button
             type="button"
-            onClick={() => dispatch({ type: "LEAVE" })}
+            onClick={() => {
+              if (sharedPlay) leaveShared();
+              dispatch({ type: "LEAVE" });
+            }}
             className="pointer-events-auto h-10 w-full border border-[#2A150C] bg-[#FAD5B3] text-sm font-medium text-[#2A150C]"
           >
             {text.endGame}
@@ -369,11 +534,12 @@ function presentationFrom(state: EngineState): { pins: MapPin[]; arcs: MapArc[];
     for (const guess of record?.guesses ?? []) {
       if (!guess.confirmed || !guess.coordinates) continue;
       const mine = guess.playerId === state.playerId;
-      pins.push({
-        id: mine ? "player" : `opponent-${guess.playerId}`,
-        coordinates: guess.coordinates,
-        color: mine ? COLOR.player : COLOR.opponent,
-      });
+        pins.push({
+          id: mine ? "player" : `opponent-${guess.playerId}`,
+          coordinates: guess.coordinates,
+          color: mine ? COLOR.player : COLOR.opponent,
+          label: state.mode === "multi" ? guess.name : undefined,
+        });
       const divisionArea = areaRound && city.id.includes(":province:");
       if (divisionArea) continue;
       const area = city.id.includes(":country:") || city.id.includes(":province:");
