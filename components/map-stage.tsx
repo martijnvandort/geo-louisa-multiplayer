@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Plus } from "lucide-react";
 import type { MapDifficulty } from "@/lib/game-engine";
 import { boundsOf, selectHydro, settleDateline, type FeatureCollection, type HydroFeature, type LandFeature } from "@/lib/region-land";
 import type { LngLatBounds } from "@/lib/region-frames";
@@ -56,8 +55,15 @@ interface StyleLayer {
   type?: string;
 }
 
+interface MapPointEvent {
+  point?: { x: number; y: number };
+  lngLat?: { lng: number; lat: number };
+  originalEvent?: { touches?: ArrayLike<unknown>; button?: number };
+  error?: { message?: string };
+}
+
 interface GeoMap {
-  on(type: string, handler: (event: { lngLat?: { lng: number; lat: number }; error?: { message?: string } }) => void): void;
+  on(type: string, handler: (event: MapPointEvent) => void): void;
   getStyle(): { layers?: StyleLayer[] } | null | undefined;
   setLayoutProperty(id: string, name: "visibility", value: "visible" | "none"): void;
   setPaintProperty(id: string, name: string, value: unknown): void;
@@ -109,7 +115,8 @@ interface GeoMap {
   };
   touchPitch?: { disable(): void };
   keyboard?: { disable(): void; disableRotation?: () => void };
-  scrollZoom: { enable(): void; disable(): void };
+  scrollZoom: { enable(): void; disable(): void; setZoomRate?(zoomRate: number): void };
+  setBearing?(bearing: number): void;
   getCanvas(): HTMLCanvasElement;
 }
 
@@ -341,46 +348,37 @@ function tuneWater(map: GeoMap, region: string) {
   }
 }
 
-/**
- * One tap moves the map this many levels.
- * Pinch uses the same factor, so a small finger spread is a jump rather than a nudge.
- */
-export const ZOOM_JUMP = 4;
 /** Near enough to set a pin on a city, including from the world map on a phone. */
 const CITY_ZOOM = 14;
+/** A press this long drops a pin. A shorter tap does not. */
+const HOLD_MS = 1000;
+/** Movement past this cancels the hold and lets the map pan. */
+const HOLD_SLOP_PX = 8;
 
-/** Scroll, double-click, keyboard, and box zoom stay off. Pinch is separate. */
-function freezeZoom(map: GeoMap) {
-  map.scrollZoom.disable();
-  map.boxZoom.disable();
-  map.doubleClickZoom.disable();
-  map.touchZoomRotate.disable();
-  map.dragRotate.disable();
-  map.touchPitch?.disable();
-  map.keyboard?.disable();
-}
-
-/** Pinch stays on. A second tap must still drop a pin, so tap-drag zoom stays off. */
-function armPinch(map: GeoMap) {
-  map.scrollZoom.disable();
+/** Drag pans. Scroll and pinch zoom at the gesture, at the map's own step. North stays up. */
+function armNavigation(map: GeoMap) {
   map.boxZoom.disable();
   map.doubleClickZoom.disable();
   map.dragRotate.disable();
   map.touchPitch?.disable();
   map.keyboard?.disable();
+  map.scrollZoom.enable();
+  map.scrollZoom.setZoomRate?.(1 / 100);
   map.touchZoomRotate.enable();
   map.touchZoomRotate.disableRotation();
-  map.touchZoomRotate.setZoomRate(ZOOM_JUMP);
+  map.touchZoomRotate.setZoomRate(undefined);
   map.touchZoomRotate._tapDragZoom?.disable();
   map.dragPan.enable();
+  map.setBearing?.(0);
+  map.setMinPitch(0);
+  map.setMaxPitch(0);
 }
 
-function frameZoom(map: GeoMap, zoom: number, fastZoom: boolean) {
+function frameZoom(map: GeoMap, zoom: number) {
   const min = Math.min(zoom, CITY_ZOOM);
   map.setMinZoom(min);
-  map.setMaxZoom(fastZoom ? Math.max(zoom, CITY_ZOOM) : zoom);
-  if (fastZoom) armPinch(map);
-  else freezeZoom(map);
+  map.setMaxZoom(Math.max(zoom, CITY_ZOOM));
+  armNavigation(map);
 }
 
 function showGraticule(map: GeoMap, region: string) {
@@ -453,9 +451,7 @@ function fitLand(
   width: number,
   height: number,
   land: FeatureCollection<LandFeature>,
-  fastZoom: boolean,
 ) {
-  freezeZoom(map);
   map.setMinZoom(0);
   map.setMaxZoom(22);
   map.setMaxBounds(null);
@@ -469,8 +465,7 @@ function fitLand(
       duration: 0,
     });
     map.setMaxBounds(WORLD_BOUNDS);
-    frameZoom(map, map.getZoom(), fastZoom);
-    map.dragPan.enable();
+    frameZoom(map, map.getZoom());
     showGraticule(map, region);
     return;
   }
@@ -485,8 +480,7 @@ function fitLand(
     bearing: 0,
     pitch: 0,
   });
-  frameZoom(map, map.getZoom(), fastZoom);
-  if (!fastZoom) map.dragPan.disable();
+  frameZoom(map, map.getZoom());
   showGraticule(map, region);
 }
 
@@ -510,7 +504,6 @@ function applyRegionFrame(
   rivers: FeatureCollection<HydroFeature>,
   lakes: FeatureCollection<HydroFeature>,
   refit: boolean,
-  fastZoom: boolean,
 ) {
   rememberLand(land.features);
   map.getSource("countries")?.setData(land);
@@ -528,9 +521,8 @@ function applyRegionFrame(
     map.getSource("rivers")?.setData(country ? hydro.rivers : emptyFeatures);
   }
   tuneWater(map, region);
-  if (refit) fitLand(map, region, width, height, land, fastZoom);
-  else if (fastZoom) armPinch(map);
-  else freezeZoom(map);
+  if (refit) fitLand(map, region, width, height, land);
+  else armNavigation(map);
 }
 
 function arcCollection(arcs: MapArc[], progress: number) {
@@ -571,6 +563,22 @@ function pinLabel(root: HTMLElement, label?: string) {
   if (!existing) root.append(tag);
 }
 
+interface HoldGesture {
+  timer: number;
+  x: number;
+  y: number;
+  el: HTMLElement;
+}
+
+function holdMarker(): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "geosense-hold";
+  el.setAttribute("aria-hidden", "true");
+  el.innerHTML =
+    '<svg viewBox="0 0 36 36" width="36" height="36"><circle cx="18" cy="18" r="5" fill="#c46a32"/><circle cx="18" cy="18" r="14" fill="none" stroke="#2A150C" stroke-width="2" opacity="0.35"/><circle class="geosense-hold-meter" cx="18" cy="18" r="14" fill="none" stroke="#c46a32" stroke-width="3" stroke-linecap="round" stroke-dasharray="87.96" stroke-dashoffset="0"/></svg>';
+  return el;
+}
+
 function pinElement(color: string, beacon: boolean, capital: boolean, label?: string) {
   const root = document.createElement("div");
   root.className = capital
@@ -601,7 +609,6 @@ export function MapStage({
   arcs,
   highlight,
   onPlace,
-  zoomLabel = "Zoom in",
 }: {
   difficulty: MapDifficulty;
   region: string;
@@ -610,7 +617,6 @@ export function MapStage({
   arcs: MapArc[];
   highlight: GeoJSON.Feature | null;
   onPlace: (coordinates: [number, number]) => void;
-  zoomLabel?: string;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -619,6 +625,10 @@ export function MapStage({
   const markersRef = useRef<Map<string, MarkerHandle>>(new Map());
   const markerCtorRef = useRef<MarkerCtor | null>(null);
   const onPlaceRef = useRef(onPlace);
+  const interactiveRef = useRef(interactive);
+  const holdRef = useRef<HoldGesture | null>(null);
+  const touchStamp = useRef(0);
+  const arcSignatureRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -626,20 +636,54 @@ export function MapStage({
   const [lands, setLands] = useState<Record<string, FeatureCollection<LandFeature>>>({});
   const landLoads = useRef(new Set<string>());
   const frameKeyRef = useRef("");
-  const zoomTarget = useRef<number | null>(null);
-  const [fastZoom, setFastZoom] = useState(false);
+
+  const clearHold = () => {
+    const hold = holdRef.current;
+    if (!hold) return;
+    window.clearTimeout(hold.timer);
+    hold.el.remove();
+    holdRef.current = null;
+  };
+  const clearHoldRef = useRef(clearHold);
+  clearHoldRef.current = clearHold;
+
+  const beginHold = (point: { x: number; y: number }, lngLat: { lng: number; lat: number }) => {
+    if (!interactiveRef.current) return;
+    clearHoldRef.current();
+    const shell = shellRef.current;
+    if (!shell) return;
+    const el = holdMarker();
+    el.style.left = `${point.x}px`;
+    el.style.top = `${point.y}px`;
+    shell.append(el);
+    const lng = lngLat.lng;
+    const lat = lngLat.lat;
+    const timer = window.setTimeout(() => {
+      holdRef.current = null;
+      el.remove();
+      if (!interactiveRef.current) return;
+      onPlaceRef.current([lng, lat]);
+    }, HOLD_MS);
+    holdRef.current = { timer, x: point.x, y: point.y, el };
+  };
+  const beginHoldRef = useRef(beginHold);
+  beginHoldRef.current = beginHold;
+
+  const moveHold = (point?: { x: number; y: number }) => {
+    const hold = holdRef.current;
+    if (!hold || !point) return;
+    const dx = point.x - hold.x;
+    const dy = point.y - hold.y;
+    if (dx * dx + dy * dy > HOLD_SLOP_PX * HOLD_SLOP_PX) clearHoldRef.current();
+  };
+  const moveHoldRef = useRef(moveHold);
+  moveHoldRef.current = moveHold;
 
   useEffect(() => {
     onPlaceRef.current = onPlace;
-  }, [onPlace]);
-
-  useLayoutEffect(() => {
-    const media = window.matchMedia("(max-width: 1279px), (pointer: coarse)");
-    const apply = () => setFastZoom(media.matches);
-    apply();
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
-  }, []);
+    interactiveRef.current = interactive;
+    if (!interactive) clearHoldRef.current();
+  }, [interactive, onPlace]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -664,8 +708,8 @@ export function MapStage({
           attributionControl: { compact: true },
           pitchWithRotate: false,
           dragRotate: false,
-          scrollZoom: false,
-          touchZoomRotate: false,
+          scrollZoom: true,
+          touchZoomRotate: true,
           doubleClickZoom: false,
           boxZoom: false,
           maxPitch: 0,
@@ -690,19 +734,12 @@ export function MapStage({
         shell.dataset.maxZoom = live.getMaxZoom().toFixed(3);
       };
       live.on("zoom", publishZoom);
-      live.on("moveend", () => {
-        zoomTarget.current = null;
-        publishZoom();
-      });
-      live.on("touchstart", () => {
-        zoomTarget.current = null;
-      });
+      live.on("moveend", publishZoom);
       let loaded = false;
       live.setMinPitch(0);
       live.setMaxPitch(0);
       live.setMaxBounds(WORLD_BOUNDS);
-      freezeZoom(live);
-      live.dragPan.disable();
+      armNavigation(live);
 
       live.on("load", () => {
         if (disposed) return;
@@ -781,10 +818,35 @@ export function MapStage({
         }
       });
 
-      live.on("click", (event) => {
-        if (!event.lngLat) return;
-        onPlaceRef.current([event.lngLat.lng, event.lngLat.lat]);
+      const fingers = (event: MapPointEvent) => event.originalEvent?.touches?.length ?? 0;
+      live.on("mousedown", (event) => {
+        if (performance.now() - touchStamp.current < 800) return;
+        if ((event.originalEvent?.button ?? 0) !== 0) return;
+        if (!event.point || !event.lngLat) return;
+        beginHoldRef.current(event.point, event.lngLat);
       });
+      live.on("mousemove", (event) => moveHoldRef.current(event.point));
+      live.on("mouseup", () => clearHoldRef.current());
+      live.on("dragstart", () => clearHoldRef.current());
+      live.on("touchstart", (event) => {
+        touchStamp.current = performance.now();
+        if (fingers(event) > 1) {
+          clearHoldRef.current();
+          return;
+        }
+        if (!event.point || !event.lngLat) return;
+        beginHoldRef.current(event.point, event.lngLat);
+      });
+      live.on("touchmove", (event) => {
+        if (fingers(event) > 1) {
+          clearHoldRef.current();
+          return;
+        }
+        moveHoldRef.current(event.point);
+      });
+      live.on("touchend", () => clearHoldRef.current());
+      live.on("touchcancel", () => clearHoldRef.current());
+      live.getCanvas().addEventListener("contextmenu", (event) => event.preventDefault());
 
       live.on("error", (event) => {
         const message = (event.error?.message ?? "").replace(/pk\.[A-Za-z0-9._-]+/g, "[redacted]");
@@ -801,6 +863,8 @@ export function MapStage({
 
     return () => {
       disposed = true;
+      clearHoldRef.current();
+      arcSignatureRef.current = null;
       observer.disconnect();
       releaseMarkers(markersRef);
       mapRef.current?.remove();
@@ -889,26 +953,17 @@ export function MapStage({
     if (!map || !ready) return;
     const source = map.getSource("arcs");
     if (!source) return;
-    if (arcs.length === 0) {
-      source.setData({ type: "FeatureCollection", features: [] });
-      return;
-    }
-    const reduce =
-      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) {
-      source.setData(arcCollection(arcs, 1));
-      return;
-    }
-    const started = performance.now();
-    let frame = 0;
-    const step = (time: number) => {
-      const progress = Math.min(1, (time - started) / 1100);
-      const eased = 1 - (1 - progress) ** 3;
-      source.setData(arcCollection(arcs, eased));
-      if (progress < 1) frame = requestAnimationFrame(step);
-    };
-    frame = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(frame);
+    const signature = arcs
+      .map(
+        (arc) =>
+          `${arc.id}|${arc.color}|${arc.segments
+            .map((segment) => segment.map((pair) => `${pair[0]},${pair[1]}`).join(" "))
+            .join("/")}`,
+      )
+      .join(";");
+    if (signature === arcSignatureRef.current) return;
+    arcSignatureRef.current = signature;
+    source.setData(arcs.length === 0 ? { type: "FeatureCollection", features: [] } : arcCollection(arcs, 1));
   }, [arcs, ready]);
 
   useEffect(() => {
@@ -938,7 +993,7 @@ export function MapStage({
       map.getSource("lakes")?.setData(emptyFeatures);
       return;
     }
-    const frameKey = `${region}:${fastZoom ? "jump" : "lock"}:${Math.round(container.clientWidth / 16)}:${Math.round(container.clientHeight / 16)}`;
+    const frameKey = `${region}:${Math.round(container.clientWidth / 16)}:${Math.round(container.clientHeight / 16)}`;
     const refit = frameKeyRef.current !== frameKey;
     frameKeyRef.current = frameKey;
     applyRegionFrame(
@@ -950,14 +1005,13 @@ export function MapStage({
       hydro.rivers,
       hydro.lakes,
       refit,
-      fastZoom,
     );
     const shell = shellRef.current;
     if (shell) {
       shell.dataset.zoom = map.getZoom().toFixed(3);
       shell.dataset.maxZoom = map.getMaxZoom().toFixed(3);
     }
-  }, [fastZoom, hydro, lands, ready, region, shell.height, shell.width]);
+  }, [hydro, lands, ready, region, shell.height, shell.width]);
 
   return (
     <div
@@ -965,14 +1019,11 @@ export function MapStage({
       data-region={region}
       data-highlight={highlight ? "yes" : "no"}
       data-arcs={arcs.some((arc) => arc.segments.some((segment) => segment.length >= 2)) ? "yes" : "no"}
-      data-fast-zoom={fastZoom ? "yes" : "no"}
-      data-zoom-jump={ZOOM_JUMP}
       className="absolute inset-0 bg-[#e2f6fe]"
     >
       <div
         ref={containerRef}
         style={{ width: "100%", height: "100%" }}
-        className={interactive ? "cursor-crosshair" : undefined}
       />
       {!ready && !failed ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[#e2f6fe]">
@@ -996,25 +1047,6 @@ export function MapStage({
             </button>
           </div>
         </div>
-      ) : null}
-      {ready && fastZoom ? (
-        <button
-          type="button"
-          data-zoom-in=""
-          aria-label={zoomLabel}
-          onClick={() => {
-            const map = mapRef.current;
-            if (!map) return;
-            const base = zoomTarget.current ?? map.getZoom();
-            const next = Math.min(map.getMaxZoom(), base + ZOOM_JUMP);
-            if (next <= base + 0.01) return;
-            zoomTarget.current = next;
-            map.easeTo({ zoom: next, duration: 180 });
-          }}
-          className="absolute top-[calc(4.75rem+env(safe-area-inset-top))] right-3 z-10 grid h-11 w-11 place-items-center border border-[#2A150C] bg-[#FBF6D2] text-[#2A150C] shadow-[0_4px_12px_rgba(42,21,12,0.16)]"
-        >
-          <Plus className="h-5 w-5" aria-hidden="true" />
-        </button>
       ) : null}
     </div>
   );

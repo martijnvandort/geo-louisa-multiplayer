@@ -4,7 +4,7 @@ import { getPlace, pickPlaceIds, quizPlaceMode, type PlaceMode } from "@/data/ca
 import type { QuestionCategory } from "@/data/question-categories";
 import { quizCard, quizPool } from "@/data/quiz";
 import type { MapDifficulty } from "@/lib/game-engine";
-import { scoreGuess, type GuessWire } from "@/lib/game-engine";
+import { revealPlace, scoreGuess, type GuessWire } from "@/lib/game-engine";
 import { GUESS_MS, RESULT_MS } from "@/lib/geo";
 import type { LocaleId } from "@/lib/i18n";
 import { mapPrompt } from "@/lib/map-prompt";
@@ -339,13 +339,7 @@ function closeChoice(room: Room) {
 }
 
 function targetForPin(cityId: string, step: QuestionStep) {
-  const city = getPlace(cityId);
-  if (step !== 3) return city;
-  return {
-    ...city,
-    id: city.id.replace(":province:", ":capital:").replace(":country:", ":capital:"),
-    name: city.capitalName ?? city.name,
-  };
+  return revealPlace(getPlace(cityId), step);
 }
 
 function closePin(room: Room) {

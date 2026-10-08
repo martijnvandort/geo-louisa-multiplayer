@@ -54,13 +54,17 @@ export function greatCircleSegments(from: LngLat, to: LngLat): LngLat[][] {
   const feature = greatCircle(point(from), point(to), { npoints: 96 });
   const geometry = feature.geometry;
   if (!geometry) return [];
+  let segments: LngLat[][] = [];
   if (geometry.type === "LineString") {
-    return splitAntimeridian(geometry.coordinates as LngLat[]);
+    segments = splitAntimeridian(geometry.coordinates as LngLat[]);
+  } else if (geometry.type === "MultiLineString") {
+    segments = (geometry.coordinates as LngLat[][]).flatMap((line) => splitAntimeridian(line));
   }
-  if (geometry.type === "MultiLineString") {
-    return (geometry.coordinates as LngLat[][]).flatMap((line) => splitAntimeridian(line));
-  }
-  return [];
+  const head = segments[0];
+  const tail = segments[segments.length - 1];
+  if (head && head.length > 0) head[0] = [from[0], from[1]];
+  if (tail && tail.length > 0) tail[tail.length - 1] = [to[0], to[1]];
+  return segments;
 }
 
 export function formatKm(distanceKm: number | null): string {

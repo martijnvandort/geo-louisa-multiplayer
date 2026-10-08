@@ -1,7 +1,7 @@
 import { getPlace, pickPlaceIds, quizPlaceMode, type PlaceMode, type PlayPlace } from "@/data/catalog";
 import type { QuestionCategory } from "@/data/question-categories";
 import { quizCard, quizPool } from "@/data/quiz";
-import { distanceToCountryKm } from "@/lib/country-shapes";
+import { approachPoint, distanceToCountryKm } from "@/lib/country-shapes";
 import type { LocaleId } from "@/lib/i18n";
 import { emptyScore, GUESS_MS, haversineKm, PREVIEW_MS, scoreFromDistance } from "@/lib/geo";
 import { distanceToProvinceKm } from "@/lib/provinces";
@@ -206,6 +206,32 @@ export function scoreGuess(guess: GuessWire, place: PlayPlace): ScoredGuess {
       : haversineKm(guess.coordinates, place.coordinates);
   if (!Number.isFinite(distanceKm)) distanceKm = haversineKm(guess.coordinates, place.coordinates);
   return { ...guess, distanceKm, ...scoreFromDistance(distanceKm, guess.timeRemaining) };
+}
+
+/** Step 3 asks for the capital. Earlier pin steps keep the country or division. */
+export function revealPlace(place: PlayPlace, step: number): PlayPlace {
+  if (step !== 3) return place;
+  return {
+    ...place,
+    id: place.id.replace(":province:", ":capital:").replace(":country:", ":capital:"),
+    name: place.capitalName ?? place.name,
+  };
+}
+
+/**
+ * Where a result line ends, in [lng, lat].
+ * Province and state clicks have no line. A country line ends on the same
+ * boundary point the kilometres use. A city line ends on that city.
+ */
+export function lineEndpoint(place: PlayPlace, guess: [number, number]): [number, number] | null {
+  if (place.id.includes(":province:")) return null;
+  if (place.id.includes(":country:")) {
+    const border = approachPoint(place.name, guess);
+    if (border) return [border[0], border[1]];
+    if (distanceToCountryKm(place.name, guess) === 0) return null;
+    return [place.coordinates[0], place.coordinates[1]];
+  }
+  return [place.coordinates[0], place.coordinates[1]];
 }
 
 function scoreRound(guesses: GuessWire[], place: PlayPlace): ScoredGuess[] {

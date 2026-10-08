@@ -105,9 +105,37 @@ body {
   background: #e2f6fe;
 }
 
+.geosense-hold {
+  position: absolute;
+  z-index: 5;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  pointer-events: none;
+}
+
+.geosense-hold-meter {
+  transform: rotate(-90deg);
+  transform-origin: 18px 18px;
+  animation: geosense-hold 1s linear forwards;
+}
+
+@keyframes geosense-hold {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 87.96;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .geosense-pin-pulse {
     animation: none;
     opacity: 0.7;
+  }
+  .geosense-hold-meter {
+    animation: none;
+    stroke-dashoffset: 44;
   }
 }

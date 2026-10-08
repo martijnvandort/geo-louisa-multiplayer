@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { MapStage, type MapArc, type MapPin } from "@/components/map-stage";
-import { approachPoint, countryOutline } from "@/lib/country-shapes";
-import { approachDivision, divisionAt } from "@/lib/provinces";
+import { countryOutline } from "@/lib/country-shapes";
+import { divisionAt } from "@/lib/provinces";
 import { provinceOutline } from "@/lib/provinces";
 import { FinalScreen, JoinPanel, LobbyScreen, MapTitle, PlayOverlay, QuestionBar, QuizCard, ScoreList, WaitingScreen } from "@/components/game/screens";
 import { useRoom } from "@/components/game/use-room";
@@ -13,8 +13,10 @@ import {
   buildMiss,
   createInitialState,
   currentCity,
+  lineEndpoint,
   locksComplete,
   reducer,
+  revealPlace,
 } from "@/lib/game-engine";
 import { playClick, playReveal, resumeAudio } from "@/lib/audio";
 import { placesFor } from "@/data/catalog";
@@ -380,7 +382,6 @@ export function GeosenseApp({ playerId, inviteCode = null }: { playerId: string;
         arcs={presentation.arcs}
         highlight={presentation.highlight}
         onPlace={onPlace}
-        zoomLabel={text.zoomIn}
       />
       <MapTitle region={view.region} locale={view.locale} />
       {view.phase === "LOBBY" && !showJoin ? (
@@ -540,31 +541,27 @@ function presentationFrom(state: EngineState): { pins: MapPin[]; arcs: MapArc[];
 
   if (state.phase === "ROUND_RESULT" && city) {
     const record = result;
+    const target = revealPlace(city, state.playFormat === "quiz" ? state.quizStep : 0);
+    const divisionClick = target.id.includes(":province:");
     if (!areaRound) {
-      pins.push({ id: "target", coordinates: city.coordinates, color: COLOR.target, beacon: true });
+      pins.push({ id: "target", coordinates: target.coordinates, color: COLOR.target, beacon: true });
     }
     for (const guess of record?.guesses ?? []) {
       if (!guess.confirmed || !guess.coordinates) continue;
       const mine = guess.playerId === state.playerId;
-        pins.push({
-          id: mine ? "player" : `opponent-${guess.playerId}`,
-          coordinates: guess.coordinates,
-          color: mine ? COLOR.player : COLOR.opponent,
-          label: state.mode === "multi" ? guess.name : undefined,
-        });
-      const divisionArea = areaRound && city.id.includes(":province:");
-      if (divisionArea) continue;
-      const area = city.id.includes(":country:") || city.id.includes(":province:");
-      const borderPoint =
-        area && (guess.distanceKm ?? 0) > 0
-          ? city.id.includes(":province:")
-            ? approachDivision(city.name, guess.coordinates)
-            : approachPoint(city.name, guess.coordinates)
-          : null;
-      arcs.push({
-        id: `${guess.playerId}-${state.roundIndex}`,
+      pins.push({
+        id: mine ? "player" : `opponent-${guess.playerId}`,
+        coordinates: guess.coordinates,
         color: mine ? COLOR.player : COLOR.opponent,
-        segments: greatCircleSegments(guess.coordinates, borderPoint ?? city.coordinates),
+        label: state.mode === "multi" ? guess.name : undefined,
+      });
+      if (divisionClick) continue;
+      const end = lineEndpoint(target, guess.coordinates);
+      if (!end) continue;
+      arcs.push({
+        id: `${guess.playerId}-${state.roundIndex}-${target.id}`,
+        color: mine ? COLOR.player : COLOR.opponent,
+        segments: greatCircleSegments(guess.coordinates, end),
       });
     }
   }

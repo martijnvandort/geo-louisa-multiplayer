@@ -4,10 +4,12 @@ import {
   buildLockGuess,
   buildMiss,
   createInitialState,
+  lineEndpoint,
   reducer,
+  revealPlace,
   totalFor,
 } from "../lib/game-engine";
-import { haversineKm, scoreFromDistance } from "../lib/geo";
+import { greatCircleSegments, haversineKm, scoreFromDistance } from "../lib/geo";
 import { readFileSync } from "node:fs";
 import { COUNTRY_PACKS } from "../data/countries";
 import { getPlace, pickPlaceIds, placeCount, placesFor, quizPlaceMode } from "../data/catalog";
@@ -445,6 +447,30 @@ const hunebedden = quizCard(2, 0, 0, drenthe, placesFor("netherlands", "province
 });
 assert.match(hunebedden.prompt, /hunebedden/);
 assert.equal(hunebedden.correct, "Drenthe");
+const africaLand = JSON.parse(
+  readFileSync(new URL("../public/land/africa.geojson", import.meta.url), "utf8"),
+) as FeatureCollection<LandFeature>;
+rememberLand(africaLand.features);
+const mozambique = getPlace("africa:country:maputo");
+const egyptPin: [number, number] = [29.233394217534197, 26.705097012993065];
+const angolaPin: [number, number] = [16.42610804690645, -12.989271483923162];
+const maputoTarget = revealPlace(mozambique, 3);
+const egyptEnd = lineEndpoint(maputoTarget, egyptPin);
+const angolaEnd = lineEndpoint(maputoTarget, angolaPin);
+assert.ok(egyptEnd && angolaEnd);
+assert.deepEqual(egyptEnd, maputoTarget.coordinates);
+assert.deepEqual(angolaEnd, maputoTarget.coordinates);
+assert.ok(Math.abs(haversineKm(egyptPin, egyptEnd) - 5868) < 1, "Egypt to Maputo is the 5,868 km in the bar");
+const egyptLine = greatCircleSegments(egyptPin, egyptEnd).flat();
+assert.deepEqual(egyptLine[0], egyptPin);
+assert.deepEqual(egyptLine[egyptLine.length - 1], maputoTarget.coordinates);
+assert.ok((egyptLine[1]?.[1] ?? 0) < egyptPin[1], "the line leaves Egypt toward the south, not the sea to the north");
+const countryEnd = lineEndpoint(revealPlace(mozambique, 2), egyptPin);
+assert.ok(countryEnd);
+assert.notDeepEqual(countryEnd, maputoTarget.coordinates);
+assert.ok(countryEnd[1] < 0, "a missed country line ends on Mozambique, south of the equator");
+assert.equal(lineEndpoint(drenthe, [6.5, 53]), null, "a province click draws no line");
+
 assert.equal(quiz.phase, "QUIZ_FEEDBACK");
 assert.equal(quiz.quizCorrect, true);
 assert.equal(quiz.quizPoints, 1000);
